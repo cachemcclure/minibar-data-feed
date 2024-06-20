@@ -1,0 +1,112 @@
+service: rb-mb-data-sqs-feed-master
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  deploymentMethod: direct
+  runtime: python3.8
+  stage: prod
+  region: us-east-1
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "lambda:InvokeFunction"
+          Resource: "*"
+        - Effect: "Allow"
+          Action:
+            - "s3:*"
+          Resource: "*"
+        - Effect: "Allow"
+          Action:
+            - "ses:*"
+          Resource: "*"
+        - Effect: "Allow"
+          Action:
+            - "sqs:*"
+          Resource: "*"
+        - Effect: "Allow"
+          Action:
+            - "events:*"
+          Resource: "*"
+        - Effect: "Allow"
+          Action:
+            - "redshift:*"
+          Resource: "*"
+
+functions:
+  rb_mb_parent_fx:
+    handler: src/handler.parent
+    timeout: 900
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [RBmbReplicationEventsQueue, Arn]
+          batchSize: 750
+          maximumBatchingWindow: 300
+  rb_mb_child_fx:
+    handler: src/handler.child
+    timeout: 900
+
+resources:
+  Resources:
+    RBmbReplicationEventsQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: RBmbReplicationEventsQueueMaster
+        VisibilityTimeout: 900
+    RBmbReplicationEventsRule:
+      Type: "AWS::Events::Rule"
+      Properties:
+        Name: replication_events2
+        EventBusName:
+          Fn::Sub: arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/mbsls-cmn-eventbridge-master
+        EventPattern:
+          detail-type: 
+            - 'Postgres replication event received'
+        Targets:
+          - Id: toRBmbReplicationEventsQueue
+            InputPath: $.detail
+            Arn:
+              Fn::GetAtt: [RBmbReplicationEventsQueue, Arn]
+    RBmbReplicationEventsQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - Ref: RBmbReplicationEventsQueue
+        PolicyDocument:
+          Id: RBmbReplicationEventsQueueDoc
+          Version: "2012-10-17"
+          Statement:
+            - Principal:
+                Service:
+                  - "events.amazonaws.com"
+              Effect: "Allow"
+              Action:
+                - "sqs:SendMessage"
+              Resource:
+                - Fn::GetAtt: [RBmbReplicationEventsQueue, Arn]
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn":
+                    Fn::GetAtt: [RBmbReplicationEventsRule, Arn]
+
+plugins:
+  - serverless-python-requirements
+ 
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+
+package:
+  patterns:
+    - "!.*/**"
+    - "!node_modules/**"
+    - "!Scripts/**"
+    - "!Lib/**"
+    - "!include/**"
+    - "!pyvenv.cfg"
+    - "!requirements.txt" 
+    - "!.gitignore"
